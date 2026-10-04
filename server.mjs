@@ -54,6 +54,8 @@ function extractJson(text) {
 }
 
 let lastReply = null;
+let gemmaList = null; // filled by discoverGemma()
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function discoverGemma() {
   const res = await fetch(`${GEMINI_BASE}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': KEY } });
@@ -71,14 +73,15 @@ async function discoverGemma() {
   };
   names.sort((a, b) => score(b) - score(a));
   console.log('Gemma models available:', names.join(', '));
+  gemmaList = names;
   return names[0];
 }
 
-async function askGoogle(system, user, json, retried = false) {
+async function askGoogleOnce(model, system, user, json) {
   // Gemma on the Gemini API doesn't take a separate system instruction or JSON mode,
   // so the instructions go in the prompt and we clean up the reply ourselves.
   const prompt = `${system}\n\n${user}${json ? '\n\nRespond with JSON only, no code fences.' : ''}`;
-  const res = await fetch(`${GEMINI_BASE}/v1beta/models/${GOOGLE_MODEL}:generateContent`, {
+  const res = await fetch(`${GEMINI_BASE}/v1beta/models/${model}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': KEY },
     body: JSON.stringify({
@@ -86,19 +89,43 @@ async function askGoogle(system, user, json, retried = false) {
       generationConfig: { temperature: 0.9, maxOutputTokens: 2048 },
     }),
   });
-  if (res.status === 404 && !retried) {
-    const found = await discoverGemma();
-    console.log(`Model ${GOOGLE_MODEL} not found, switching to ${found}`);
-    GOOGLE_MODEL = found;
-    return askGoogle(system, user, json, true);
+  if (!res.ok) {
+    const err = new Error(`Google ${res.status} (${model}): ${(await res.text()).slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
   }
-  if (!res.ok) throw new Error(`Google ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   // Skip any "thinking" parts some models return; keep only the answer text.
   const parts = data.candidates?.[0]?.content?.parts || [];
   const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
   lastReply = { finishReason: data.candidates?.[0]?.finishReason ?? null, text: text.slice(0, 300) };
   return json ? extractJson(text) : text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+
+// Try the configured Gemma; on 404 find what's available, on 5xx retry once and then
+// fall back to the next available Gemma model.
+async function askGoogle(system, user, json) {
+  const tried = new Set();
+  let model = GOOGLE_MODEL;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    tried.add(model);
+    try {
+      const out = await askGoogleOnce(model, system, user, json);
+      if (model !== GOOGLE_MODEL) { console.log(`Switching default model to ${model}`); GOOGLE_MODEL = model; }
+      return out;
+    } catch (err) {
+      const s = err.status || 0;
+      if (s === 404 || s >= 500) {
+        if (s >= 500 && attempt === 0) { await sleep(700); tried.delete(model); continue; } // one quick retry
+        if (!gemmaList) { try { await discoverGemma(); } catch (e) { console.error(e.message); } }
+        const next = (gemmaList || []).find(m => !tried.has(m));
+        if (next) { console.log(`${model} failed (${s}), trying ${next}`); model = next; continue; }
+      }
+      throw err;
+    }
+  }
+  throw new Error('All Gemma attempts failed');
 }
 
 async function askOllama(system, user, json) {
