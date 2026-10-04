@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const KEY = process.env.GEMINI_API_KEY || '';
 const PROVIDER = (process.env.LLM_PROVIDER || (KEY ? 'google' : 'ollama')).toLowerCase();
-let GOOGLE_MODEL = process.env.GEMMA_MODEL || 'gemma-3-27b-it';
+let GOOGLE_MODEL = process.env.GEMMA_MODEL || 'gemma-4-31b-it';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3:4b';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const GEMINI_BASE = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com';
@@ -31,15 +31,30 @@ function allowed(ip) {
   return true;
 }
 
-// Gemma sometimes wraps JSON in ```json fences; strip them.
-function cleanJson(text) {
-  const t = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
-  const start = t.indexOf('{'); const end = t.lastIndexOf('}');
-  return start >= 0 && end > start ? t.slice(start, end + 1) : t;
+// Pull a usable JSON object out of a model reply. Handles code fences, <think> blocks,
+// extra text around the JSON, and replies that contain several {...} chunks.
+function extractJson(text) {
+  const t = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
+  const candidates = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== '{') continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < t.length; j++) {
+      const c = t[j];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) { candidates.push(t.slice(i, j + 1)); break; }
+    }
+  }
+  for (const c of candidates.reverse()) {
+    try { const o = JSON.parse(c); if (o && typeof o === 'object' && o.pick) return JSON.stringify(o); } catch { /* try next */ }
+  }
+  throw new Error(`No usable JSON in reply: ${t.slice(0, 160)}`);
 }
 
+let lastReply = null;
 
-// If the configured Gemma model isn't available (404), ask Google which Gemma models this key can use.
 async function discoverGemma() {
   const res = await fetch(`${GEMINI_BASE}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': KEY } });
   if (!res.ok) throw new Error(`ListModels ${res.status}`);
@@ -68,7 +83,7 @@ async function askGoogle(system, user, json, retried = false) {
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': KEY },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.9, maxOutputTokens: 300 },
+      generationConfig: { temperature: 0.9, maxOutputTokens: 2048 },
     }),
   });
   if (res.status === 404 && !retried) {
@@ -79,8 +94,11 @@ async function askGoogle(system, user, json, retried = false) {
   }
   if (!res.ok) throw new Error(`Google ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-  return json ? cleanJson(text) : text.trim();
+  // Skip any "thinking" parts some models return; keep only the answer text.
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+  lastReply = { finishReason: data.candidates?.[0]?.finishReason ?? null, text: text.slice(0, 300) };
+  return json ? extractJson(text) : text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 async function askOllama(system, user, json) {
@@ -94,7 +112,7 @@ async function askOllama(system, user, json) {
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}`);
   const data = await res.json();
-  return json ? cleanJson(data.message?.content || '') : (data.message?.content || '').trim();
+  return json ? extractJson(data.message?.content || '') : (data.message?.content || '').trim();
 }
 
 let lastError = null;
@@ -110,6 +128,7 @@ app.get('/api/health', (_req, res) => {
     model: PROVIDER === 'google' ? GOOGLE_MODEL : OLLAMA_MODEL,
     hasKey: Boolean(KEY),
     lastError,
+    lastReply,
   });
 });
 
