@@ -1,86 +1,141 @@
 <main class="wrap">
-  <header>
-    <p class="kicker">lets-not-be-hangry · powered by {{ model }}</p>
-    <h1>Hungry? Busy? <span>Eat something.</span></h1>
-    <p class="note">Everything on the list is yours. No need to ask.</p>
+  <header class="hero">
+    <p class="badge">powered by {{ model }} · an open model</p>
+    <h1>Let's Not Be <span class="hangry">Hangry</span></h1>
+    <p class="note">Everything on the list is yours. <strong>No need to ask.</strong></p>
   </header>
 
   @if (nudge()) {
     <div class="nudge" role="status">
+      <span class="nudge-emoji" aria-hidden="true">⏰</span>
       <span>{{ nudge() }}</span>
-      <button class="ghost" (click)="nudge.set(null)" aria-label="Dismiss">✕</button>
+      <button class="x" (click)="nudge.set(null)" aria-label="Dismiss reminder">✕</button>
     </div>
   }
 
-  <section class="card">
-    <h2>How much time do you have?</h2>
+  <section class="panel">
+    <h2>How much time you got?</h2>
     <div class="times">
-      @for (m of [1, 5, 15]; track m) {
-        <button class="time" (click)="pick(m)" [disabled]="loading() !== null">
-          @if (loading() === m) { <span class="dots">thinking</span> } @else { {{ m }} min }
+      @for (t of times; track t.m) {
+        <button
+          class="time {{ t.tone }}"
+          (click)="pick(t.m)"
+          [disabled]="loading() !== null"
+          [class.busy]="loading() === t.m"
+        >
+          <span class="t-emoji" aria-hidden="true">{{ t.emoji }}</span>
+          <span class="t-label">{{ loading() === t.m ? 'thinking…' : t.label }}</span>
+          <span class="t-sub">{{ t.sub }}</span>
         </button>
       }
     </div>
-
-    @if (suggestion(); as s) {
-      <div class="result">
-        <p class="pick">{{ s.pick }}</p>
-        <p class="where">📍 {{ s.where }}</p>
-        <p>{{ s.how }}</p>
-        <p class="friendly">{{ s.note }}</p>
-        <div class="actions">
-          <button (click)="ate()">I ate it</button>
-          <button class="secondary" (click)="finished(s.pick)">I finished it (add to restock)</button>
-        </div>
-        @if (s.source === 'demo') {
-          <p class="demo">Demo mode: Gemma isn't reachable right now, so this pick came from the built-in fallback.</p>
-        }
-      </div>
-    }
-    <p class="last">Last ate: {{ timeAgo(lastAte()) }}</p>
   </section>
 
-  @if (restock().length) {
-    <section class="card">
-      <h2>Restock list</h2>
-      <ul class="restock">
-        @for (r of restock(); track r) { <li>{{ r }}</li> }
-      </ul>
-      <button class="ghost" (click)="clearRestock()">Bought it all, clear list</button>
+  @if (suggestion(); as s) {
+    <section class="result" aria-live="polite">
+      <div class="big-emoji" aria-hidden="true">{{ emojiFor(s.pick) }}</div>
+      <p class="pick">{{ s.pick }}</p>
+      <p class="where">📍 {{ s.where }}</p>
+      <p class="how">{{ s.how }}</p>
+      <p class="friendly">“{{ s.note }}”</p>
+      <div class="result-actions">
+        <button class="chunky mint" (click)="ate()">Ate it! ✅</button>
+        <button class="chunky outline" (click)="finished(s.pick)">Finished it 🛒</button>
+        <button class="chunky ghosty" (click)="pick(lastMinutes())">Something else 🔄</button>
+      </div>
+      @if (s.source === 'demo') {
+        <p class="demo">
+          Demo mode: Gemma isn't reachable right now, so this pick came from the built-in fallback.
+        </p>
+      }
     </section>
   }
 
-  <section class="card">
-    <button class="link" (click)="showList.set(!showList())">
-      {{ showList() ? 'Hide' : 'Edit' }} the fair-game list ({{ items().length }})
+  @if (restock().length) {
+    <section class="panel restock-panel">
+      <h2>🛒 Restock list</h2>
+      <ul class="chips">
+        @for (r of restock(); track r) {
+          <li>{{ emojiFor(r) }} {{ r }}</li>
+        }
+      </ul>
+      <button class="text-btn" (click)="clearRestock()">Bought it all, clear the list</button>
+    </section>
+  }
+
+  <section class="panel">
+    <button
+      class="text-btn big"
+      (click)="showList.set(!showList())"
+      [attr.aria-expanded]="showList()"
+    >
+      {{ showList() ? '🙈 Hide' : '📝 Edit' }} the fair-game list ({{ items().length }})
     </button>
     @if (showList()) {
       <ul class="items">
         @for (i of items(); track i.name; let idx = $index) {
           <li>
-            <span><strong>{{ i.name }}</strong> · {{ i.where }} · {{ i.minutes }} min · {{ i.cook }}</span>
-            <button class="ghost" (click)="removeItem(idx)" aria-label="Remove">✕</button>
+            <span class="i-emoji" aria-hidden="true">{{ emojiFor(i.name) }}</span>
+            <span class="i-text"
+              ><strong>{{ i.name }}</strong
+              ><small>{{ i.where }} · {{ i.minutes }} min · {{ i.cook }}</small></span
+            >
+            <button class="x" (click)="removeItem(idx)" [attr.aria-label]="'Remove ' + i.name">
+              ✕
+            </button>
           </li>
         }
       </ul>
       <form class="add" (submit)="addItem($event)">
-        <input name="name" placeholder="Food" autocomplete="off"
-               [value]="draft().name" (input)="setDraft('name', $any($event.target).value)" />
-        <input name="where" placeholder="Where is it?" autocomplete="off"
-               [value]="draft().where" (input)="setDraft('where', $any($event.target).value)" />
-        <input name="minutes" type="number" min="1" aria-label="Minutes"
-               [value]="draft().minutes" (input)="setDraft('minutes', +$any($event.target).value)" />
-        <select name="cook" aria-label="Cooking" (change)="setDraft('cook', $any($event.target).value)">
-          @for (c of cooks; track c) { <option [value]="c" [selected]="draft().cook === c">{{ c }}</option> }
+        <input
+          name="name"
+          placeholder="Food"
+          autocomplete="off"
+          [value]="draft().name"
+          (input)="setDraft('name', $any($event.target).value)"
+        />
+        <input
+          name="where"
+          placeholder="Where is it?"
+          autocomplete="off"
+          [value]="draft().where"
+          (input)="setDraft('where', $any($event.target).value)"
+        />
+        <input
+          name="minutes"
+          type="number"
+          min="1"
+          aria-label="Minutes"
+          [value]="draft().minutes"
+          (input)="setDraft('minutes', +$any($event.target).value)"
+        />
+        <select
+          name="cook"
+          aria-label="Cooking"
+          (change)="setDraft('cook', $any($event.target).value)"
+        >
+          @for (c of cooks; track c) {
+            <option [value]="c" [selected]="draft().cook === c">{{ c }}</option>
+          }
         </select>
-        <button type="submit">Add</button>
-        @if (addError()) { <p class="error">{{ addError() }}</p> }
+        <button type="submit" class="chunky sun">Add it ➕</button>
+        @if (addError()) {
+          <p class="error">{{ addError() }}</p>
+        }
       </form>
     }
   </section>
 
   <footer>
-    <button class="link" (click)="enableNotifications()">Turn on meal reminders</button>
-    · Built with love and Gemma, an open model.
+    <button class="text-btn" (click)="enableNotifications()">🔔 Turn on meal reminders</button>
+    <p>Made with love (and Gemma) for my favorite forgetful eater.</p>
   </footer>
+
+  <div class="bottom-bar">
+    <div class="last">
+      <span class="last-label">Last ate</span>
+      <span class="last-value">{{ timeAgo(lastAte()) }}</span>
+    </div>
+    <button class="chunky mint" (click)="ate()">I ate! ✅</button>
+  </div>
 </main>

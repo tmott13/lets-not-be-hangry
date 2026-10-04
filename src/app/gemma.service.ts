@@ -14,7 +14,7 @@ Reply ONLY as JSON: {"pick": string, "where": string, "how": string, "note": str
 @Injectable({ providedIn: 'root' })
 export class GemmaService {
   async suggest(minutes: number, items: PantryItem[], recent: string[]): Promise<Suggestion> {
-    const options = items.filter(i => i.minutes <= minutes);
+    const options = items.filter((i) => i.minutes <= minutes);
     const pool = options.length ? options : items;
     const user = `Time available: ${minutes} minute(s).
 Fair game: ${JSON.stringify(pool)}
@@ -57,13 +57,21 @@ Recently suggested (avoid repeating): ${JSON.stringify(recent.slice(-3))}`;
   private demoPick(pool: PantryItem[], recent: string[]): Suggestion {
     const order = { none: 0, microwave: 1, stove: 2 } as const;
     const sorted = [...pool].sort((a, b) => order[a.cook] - order[b.cook]);
-    const fresh = sorted.filter(i => !recent.includes(i.name));
+    const fresh = sorted.filter((i) => !recent.includes(i.name));
     const list = fresh.length ? fresh : sorted;
     const item = list[Math.floor(Math.random() * Math.min(3, list.length))];
     const how =
-      item.cook === 'none' ? 'Grab it and go. No dishes needed.'
-      : item.cook === 'microwave' ? 'Microwave it, eat it, done.'
-      : 'Quick stovetop job. Worth it.';
-    return { pick: item.name, where: item.where, how, note: "It's on the list, so it's yours.", source: 'demo' };
+      item.cook === 'none'
+        ? 'Grab it and go. No dishes needed.'
+        : item.cook === 'microwave'
+          ? 'Microwave it, eat it, done.'
+          : 'Quick stovetop job. Worth it.';
+    return {
+      pick: item.name,
+      where: item.where,
+      how,
+      note: "It's on the list, so it's yours.",
+      source: 'demo',
+    };
   }
 }
