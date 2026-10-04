@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: lets-not-be-hangry
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: LLM_PROVIDER
+        value: google
+      - key: GEMMA_MODEL
+        value: gemma-3-27b-it
+      - key: GEMINI_API_KEY
+        sync: false
