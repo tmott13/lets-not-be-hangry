@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const KEY = process.env.GEMINI_API_KEY || '';
 const PROVIDER = (process.env.LLM_PROVIDER || (KEY ? 'google' : 'ollama')).toLowerCase();
-const GOOGLE_MODEL = process.env.GEMMA_MODEL || 'gemma-3-27b-it';
+let GOOGLE_MODEL = process.env.GEMMA_MODEL || 'gemma-3-27b-it';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3:4b';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const GEMINI_BASE = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com';
@@ -38,7 +38,28 @@ function cleanJson(text) {
   return start >= 0 && end > start ? t.slice(start, end + 1) : t;
 }
 
-async function askGoogle(system, user, json) {
+
+// If the configured Gemma model isn't available (404), ask Google which Gemma models this key can use.
+async function discoverGemma() {
+  const res = await fetch(`${GEMINI_BASE}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': KEY } });
+  if (!res.ok) throw new Error(`ListModels ${res.status}`);
+  const data = await res.json();
+  const names = (data.models || [])
+    .filter(m => /gemma/i.test(m.name) && (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => m.name.replace(/^models\//, ''));
+  if (!names.length) throw new Error('No Gemma models available for this key');
+  // Prefer instruction-tuned, newest version, biggest size.
+  const score = n => {
+    const ver = parseFloat((n.match(/gemma-?(\d+(?:\.\d+)?)/i) || [])[1] || '0');
+    const size = parseFloat((n.match(/(\d+(?:\.\d+)?)b/i) || [])[1] || '0');
+    return (/-it\b|-it$/.test(n) ? 1000 : 0) + ver * 100 + Math.min(size, 99);
+  };
+  names.sort((a, b) => score(b) - score(a));
+  console.log('Gemma models available:', names.join(', '));
+  return names[0];
+}
+
+async function askGoogle(system, user, json, retried = false) {
   // Gemma on the Gemini API doesn't take a separate system instruction or JSON mode,
   // so the instructions go in the prompt and we clean up the reply ourselves.
   const prompt = `${system}\n\n${user}${json ? '\n\nRespond with JSON only, no code fences.' : ''}`;
@@ -50,6 +71,12 @@ async function askGoogle(system, user, json) {
       generationConfig: { temperature: 0.9, maxOutputTokens: 300 },
     }),
   });
+  if (res.status === 404 && !retried) {
+    const found = await discoverGemma();
+    console.log(`Model ${GOOGLE_MODEL} not found, switching to ${found}`);
+    GOOGLE_MODEL = found;
+    return askGoogle(system, user, json, true);
+  }
   if (!res.ok) throw new Error(`Google ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
@@ -70,12 +97,20 @@ async function askOllama(system, user, json) {
   return json ? cleanJson(data.message?.content || '') : (data.message?.content || '').trim();
 }
 
+let lastError = null;
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '32kb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, provider: PROVIDER, model: PROVIDER === 'google' ? GOOGLE_MODEL : OLLAMA_MODEL });
+  res.json({
+    ok: true,
+    provider: PROVIDER,
+    model: PROVIDER === 'google' ? GOOGLE_MODEL : OLLAMA_MODEL,
+    hasKey: Boolean(KEY),
+    lastError,
+  });
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -88,9 +123,11 @@ app.post('/api/chat', async (req, res) => {
     const content = PROVIDER === 'google'
       ? await askGoogle(system, user, !!json)
       : await askOllama(system, user, !!json);
+    lastError = null;
     res.json({ content });
   } catch (err) {
     console.error(err.message);
+    lastError = { at: new Date().toISOString(), message: String(err.message).replace(KEY || '__none__', '[key]').slice(0, 300) };
     res.status(502).json({ error: 'Model unavailable' });
   }
 });
